@@ -65,6 +65,10 @@ usage() {
 instanceId=$(date +%s%N | md5sum | cut -c1-5)
 
 # Log to console
+# Usage: log <level> <message> [data]
+#  level: log level (info, warn, error)
+#  message: log message
+#  data: optional data in JSON format added if JSON_LOGS is true
 log() {
   local level="$1"
   local message="$2"
@@ -216,8 +220,7 @@ generate_ssh_key() {
   SSH_PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
 }
 
-# Create resource group
-# Usage: create_resource_group <resourceGroup> <location>
+# Create resource group, if not already exists
 create_resource_group() {
   if [[ -z "$RESOURCE_GROUP" || -z "$LOCATION" ]]; then
     log "error" "Resource group name and location must not be empty."
@@ -253,8 +256,7 @@ deploy_azure_infra() {
 }
 
 # Display control plane values from Bicep template output
-# Returns: controlPlaneName
-display_control_plane_values() {
+display_azure_control_plane_values() {
   if [[ -z "$RESOURCE_GROUP" || -z "$DEPLOYMENT_NAME" ]]; then
     log "error" "Resource group name and Deployment name must not be empty."
     exit 1
@@ -280,7 +282,9 @@ display_control_plane_values() {
 }
 
 # Get cluster credentials and set kubectl context
-get_credentials() {
+# 1. Get list of cluster names from Azure CLI
+# 2. Get credentials for each cluster using az aks get-credentials
+get_azure_kube_credentials() {
   if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE" ]]; then
     log "error" "Resource group name and control plane name must not be empty."
     exit 1
@@ -303,6 +307,16 @@ get_credentials() {
   log "info" "Credential retrieval for all clusters complete."
 }
 
+# Deploy k3d clusters
+# 1. Check k3d is installed
+# 2. Check CONTROL_PLANE is not empty
+# 3. Create docker network edgeClusters if it does not exist. We create this network with
+#    docker instead of k3d so we can control the configuration of the network.
+# 4. Create k3d CONTROL_PLANE cluster
+# 5. Create k3d EDGE_CLUSTER_COUNT edge clusters
+# 6. Modify kubeconfig to work with this script and argocd. a) Rename the context names to
+#    match the cluster names. b) Update the server addresses to use their IPs for 
+#    the docker network edgeClusters.
 deploy_k3d_clusters() {
   local k3dnetwork="edgeClusters"
 
@@ -411,6 +425,13 @@ set_kubectl_context() {
 
 # Deploy Argo CD, if the argocd namespace does not already exist
 # Usage: deploy_argocd
+# 1. Set kubectl context to CONTROL_PLANE
+# 2. Check if argocd namespace already exists
+# 3. Remove ~/.config/argocd directory if it exists
+# 4. Create argocd namespace
+# 5. Apply Argo CD manifests
+# 6. Wait for Argo CD to be ready
+# 7. Patch Argo CD to be a LoadBalancer service
 deploy_argocd() {
   set_kubectl_context "$CONTROL_PLANE"
 
@@ -461,6 +482,10 @@ deploy_argocd() {
   log "info" "Argo CD installation completed."
 }
 
+# Get Argo CD external IP address
+# 1. Wait for argocd-server service to have an external IP address
+# 2. Get the external IP address
+# 3. Set EXTERNAL_IP variable
 get_external_ip() {
   # Wait for argocd-server service to have an external IP address
   log "info" "Waiting for an external IP address..."
@@ -484,11 +509,13 @@ get_external_ip() {
 }
 
 # Login to Argo CD, if not already logged in
-# if argocdPassword is not empty, update password
-# Usage: login_to_argocd <externalIp> <argocdPassword>
+# If ARGOCD_PASSWORD is not empty, update password
+# 1. Check if argocd is already logged in
+# 2. Wait for argocd-initial-admin-secret to be available
+# 3. Get plain text password from argocd-initial-admin-secret secret
+# 4. Login to Argo CD
+# 5. If ARGOCD_PASSWORD is not empty, update password
 login_to_argocd() {
-  log "info" "Logging in to Argo CD..."
-
   if [[ -z "$EXTERNAL_IP" ]]; then
     log "error" "External IP must not be empty."
     exit 1
@@ -531,6 +558,8 @@ login_to_argocd() {
 }
 
 # Add edge clusters to Argo CD
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 2. For each edge cluster, add it to Argo CD
 add_argocd_clusters() {
   local edgeClusters
   
@@ -551,6 +580,8 @@ add_argocd_clusters() {
 # Deploy Argo CD applications
 # For each edge cluster, apply manifests from manifestUrl template
 # The template must contain {clustername} placeholder
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 2. For each edge cluster, apply manifests from manifestUrl template
 apply_manifests() {
   local edgeClusters
 
@@ -576,6 +607,12 @@ apply_manifests() {
   done
 }
 
+# Run KUTTL tests, collect results
+
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 2. For each edge cluster, run KUTTL tests in tests/{cluster} folder
+# 3. Collect test results in a temporary folder
+# 4. Aggregate test results into a single file in JUnit format
 test_deployment() {
   local edgeClusters
   local timestamp
@@ -730,7 +767,8 @@ test_deployment() {
   log "info" "Results saved to $testResultsFile"
 }
 
-delete_resource_group() {
+# Delete the Azure resource group
+delete_azure_resource_group() {
   if az group exists --name "$RESOURCE_GROUP" > /dev/null 2>&1; then
     log "info" "Deleting resource group $RESOURCE_GROUP..."
     if az group delete --name "$RESOURCE_GROUP" --yes > /dev/null 2>&1; then
@@ -742,6 +780,20 @@ delete_resource_group() {
   fi
 }
 
+# Delete the k3d clusters
+delete_k3d_clusters() {
+  if k3d cluster list > /dev/null 2>&1; then
+    log "info" "Deleting k3d clusters..."
+    if k3d cluster delete -a > /dev/null 2>&1; then
+      log "info" "Deleted k3d clusters successfully."
+    else
+      log "error" "Failed to delete k3d clusters."
+      exit 1
+    fi
+  fi
+}
+
+# Delete the local kubeconfig file
 delete_kubeconfig() {
   if [ -f ~/.kube/config ]; then
     log "info" "Removing existing kubeconfig file..."
@@ -749,6 +801,7 @@ delete_kubeconfig() {
   fi
 }
 
+# Delete the argocd config directory
 delete_argocd() {
   if [ -d ~/.config/argocd ]; then
     log "info" "Removing existing Argo CD configuration directory..."
@@ -774,8 +827,8 @@ command_azure() {
   steps+=("generate_ssh_key")
   steps+=("create_resource_group")
   steps+=("deploy_azure_infra")
-  steps+=("display_control_plane_values")
-  steps+=("get_credentials")
+  steps+=("display_azure_control_plane_values")
+  steps+=("get_azure_kube_credentials")
 }
 
 command_k3d() {
@@ -804,7 +857,11 @@ command_delete() {
       exit 0
     fi
   fi
-  steps+=("delete_resource_group")
+  if [ "$MODE" == "azure" ]; then
+    steps+=("delete_azure_resource_group")
+  else
+    steps+=("delete_k3d_clusters")
+  fi
   steps+=("delete_kubeconfig")
   steps+=("delete_argocd")
 }
