@@ -24,6 +24,8 @@ The tool is executed by running `./test-harness.sh` followed by a command and an
 The default is to use k3d for deployment. If you want to deploy to azure, use
 `--mode azure` from the command line, or set the `MODE` environment variable.
 
+**Note:** The `all` command does everything except delete the infrastructure.
+
 The available commands are:
 
 - `all`: Deploys clusters, Argo CD, manifests, and runs tests
@@ -32,7 +34,7 @@ The available commands are:
 - `argocd`: Deploys Argo CD and edge clusters
 - `manifests`: Applies edge cluster manifests
 - `test`: Runs tests
-- `delete`: Deletes Azure infrastructure
+- `delete`: Deletes k3d or Azure infrastructure
 
 The available options are:
 
@@ -66,6 +68,66 @@ The tool also accepts several environment variables, which take precedence over 
 - `SSH_PUBLIC_KEY`: Public SSH key
 - `JSON_LOGS`: Output logs in JSON format
 - `TEST_RESULTS_DIR`: Output directory for test results
+
+## Commands and their steps
+
+### **azure** Command
+
+The `azure` command has the following steps:
+
+1. `login_to_azure`: Log into Azure using the Azure CLI. This is necessary to access Azure resources and deploy the infrastructure.
+
+2. `generate_ssh_key`: Generate a public and private SSH key pair to be used with the Azure virtual machines.
+
+3. `create_resource_group`: Create an Azure resource group to hold the resources that will be deployed for this project.
+
+4. `deploy_azure_infra`: Deploy the Azure infrastructure, including virtual networks, virtual machines, and load balancers.
+
+5. `display_azure_control_plane_values`: Display the values of the control plane cluster that was created in Azure. This information can be helpful in further configuring the infrastructure.
+
+6. `get_azure_kube_credentials`: Retrieve the Kubernetes credentials for the Azure cluster. These credentials are necessary to connect to and manage the cluster using kubectl.
+
+### **k3d** Command
+
+The `k3d` command has the following steps:
+
+1. `deploy_k3d_clusters`: Deploy k3d infrastructure, including a control plane cluster and edge clusters.
+
+2. `modify_k3d_kube_credentials`: Modify the kubectl configuration file to match context names to cluster names and fix server addresses.
+
+### **argocd** Command
+
+The `argocd` command has the following steps:
+
+1. `deploy_argocd`: Deploy Argo CD to the control plane cluster.
+
+2. `get_external_ip`: Retrieve the external IP address of the Argo CD service.
+
+3. `login_to_argocd`: Log in to Argo CD using the CLI and the external IP address. If ARGOCD_PASSWORD (or -p option) is set, update the argoCD admin password.
+
+4. `add_argocd_clusters`: Add the edge clusters to Argo CD as clusters to manage.
+
+### **test** Command
+
+The `test` command has the following steps:
+
+1. `test_deployment`: Apply the manifests to the edge clusters and run the tests against them.
+
+2. `aggregate_test_results`: Aggregate the results of the tests and output them to a Junit file.
+
+### **delete** Command
+
+The `delete` command has the following steps:
+
+1. Confirmation prompt: If confirmation is not skipped, ask the user if they're sure they want to delete the Azure resource group.
+
+2. `delete_azure_resource_group`: If MODE is `azure`, delete the Azure resource group and all resources within it.
+
+3. `delete_k3d_clusters`: If MODE is `k3d`, Delete the k3d clusters and all associated resources.
+
+4. `delete_kubeconfig`: Remove the kubeconfig context for the deleted clusters.
+
+5. `delete_argocd`: Remove the edge clusters from Argo CD, if applicable.
 
 ## License
 
