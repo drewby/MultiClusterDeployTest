@@ -532,6 +532,8 @@ login_to_argocd() {
     return 0
   fi
 
+  log "info" "Logging in to Argo CD..."
+
   # Wait for argocd-initial-admin-secret to be available
   if ! kubectl wait secret --namespace argocd argocd-initial-admin-secret --for=jsonpath='{.type}'=Opaque --timeout=90s > /dev/null 2>&1; then
     log "error" "Failed to get argocd-initial-admin-secret."
