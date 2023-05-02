@@ -10,10 +10,10 @@ GitHub codespaces.
 
 ## Prerequisites
 
-- docker
 - kubectl
 - kuttl
 - argocd CLI
+- docker (if deploying with k3d)
 - k3d (if deploying with k3d)
 - azure CLI (if deploying to azure)
 
