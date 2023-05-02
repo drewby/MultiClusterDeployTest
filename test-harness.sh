@@ -1,4 +1,5 @@
 #!/bin/bash
+#shellcheck disable=SC2317
 # Set default values
 : "${RESOURCE_GROUP:=argoCdDemo}"
 : "${LOCATION:=eastus}"
