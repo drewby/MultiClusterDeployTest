@@ -15,6 +15,10 @@
 : "${TEST_RESULTS_DIR:=./test-results}"
 : "${MODE:=k3d}"
 : "${EDGE_CLUSTER_COUNT:=3}"
+: "${TEMP_DIR:=$(mktemp -d)}"
+
+EXIT_FLAG=0
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
 
 # Display usage
 usage() {
@@ -619,15 +623,12 @@ apply_manifests() {
 }
 
 # Run KUTTL tests, collect results
-
 # 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
 # 2. For each edge cluster, run KUTTL tests in tests/{cluster} folder
 # 3. Collect test results in a temporary folder
 # 4. Aggregate test results into a single file in JUnit format
 test_deployment() {
   local edgeClusters
-  local timestamp
-  timestamp=$(date +%Y%m%d%H%M%S)
 
   # Require resourceGroup, controlPlane
   if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE" ]]; then
@@ -638,9 +639,6 @@ test_deployment() {
   # log info message
   log "info" "Running tests..."
 
-  local tempDir
-  tempDir=$(mktemp -d)
-
   # Get list of edge clusters
   edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
 
@@ -649,89 +647,59 @@ test_deployment() {
     set_kubectl_context "$cluster"
 
     local testFolder="tests/$cluster"
-    local reportName="$cluster-$timestamp"
-    if kubectl kuttl test --report JSON --artifacts-dir "$tempDir" --report-name "$reportName" "$testFolder" > /dev/null 2>&1; then
+    local reportName="$cluster-$TIMESTAMP"
+    if kubectl kuttl test --report JSON --artifacts-dir "$TEMP_DIR" --report-name "$reportName" "$testFolder" > /dev/null 2>&1; then
       log "info" "Tests for $cluster completed."
     else
       log "error" "Tests for $cluster failed."
+      EXIT_FLAG=1
     fi
   done
+}
 
-  local total=0
-  local failures=0
-  local errors=0
-  local notRun=0
-  local inconclusive=0
-  local ignored=0
-  local skipped=0
-  local totalTime=0
-  local testResultsName="results-$timestamp"
-  local testResultsFile="$TEST_RESULTS_DIR/$testResultsName.xml"
-  local totalTestSuites=()
-
-  # create $TEST_RESULTS_DIR if it doesn't exist
+# Aggregate test results into a single file in JUnit format
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 2. For each edge cluster, get test results in JSON format
+# 3. Aggregate test results into a single file in JUnit format
+aggregate_test_results() {
+  local total=0 failures=0 errors=0 notRun=0 inconclusive=0 ignored=0 skipped=0 totalTime=0 totalTestSuites=()
+  local testResultsName="results-$TIMESTAMP" 
+  local testResultsFile="$TEST_RESULTS_DIR/$testResultsName.xml" 
+  
   mkdir -p "$TEST_RESULTS_DIR"
+  
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
 
   for cluster in $edgeClusters; do
-    local reportName="$cluster-$timestamp"
-    local clusterResultsFile="$tempDir/$reportName.json"
+    local reportName; reportName="$cluster-$TIMESTAMP" 
+    local clusterResultsFile; clusterResultsFile="$TEMP_DIR/$reportName.json"
 
     log "info" "Parsing test results in $clusterResultsFile"
+    
+    local testResults; testResults=$(jq -r '.testsuite[] | @base64' "$clusterResultsFile")
 
-    # get the testsuite elements, one per line
-    local testResults
-    testResults=$(jq -r '.testsuite[] | @base64' "$clusterResultsFile")
-    # loop over each test suite
     for result in $testResults; do
-      local testSuite
-      testSuite=$(base64 -d <<<"$result")
-      local testSuiteName
-      testSuiteName=$(jq -r '.name' <<<"$testSuite")
-
+      local testSuite; testSuite=$(base64 -d <<<"$result") testSuiteName=$(jq -r '.name' <<<"$testSuite")
       log "info" "Parsing test suite $testSuiteName"
+      local testSuiteType="KUTTL" 
+      local testSuiteTests; testSuiteTests=$(jq -r '.tests' <<<"$testSuite") testSuiteFailures=0 testSuiteErrors=0
+      local testSuiteTime; testSuiteTime=$(jq -r '.time' <<<"$testSuite") testSuiteResult="Success" testSuiteSuccess="True"
+      local testSuiteTestCases; testSuiteTestCases=$(jq -r '.testcase[] | @base64' <<<"$testSuite") testCases=()
 
-      local testSuiteType="KUTTL"
-      local testSuiteTests
-      testSuiteTests=$(jq -r '.tests' <<<"$testSuite")
-      local testSuiteFailures=0
-      local testSuiteErrors=0
-      local testSuiteTime
-      testSuiteTime=$(jq -r '.time' <<<"$testSuite")
-      local testSuiteResult="Success"
-      local testSuiteSuccess="True"
-
-      local testSuiteTestCases
-      testSuiteTestCases=$(jq -r '.testcase[] | @base64' <<<"$testSuite")
-      local testCases=()
-
-      # loop over each test case
       for item in $testSuiteTestCases; do
-        local testCase
-        testCase=$(base64 -d <<<"$item")
-
-        local testCaseClassName
-        testCaseClassName=$(jq -r '.classname' <<<"$testCase")
-        local testCaseName
-        testCaseName=$testCaseClassName-$(jq -r '.name' <<<"$testCase")
+        local testCase; testCase=$(base64 -d <<<"$item") 
+        local testCaseClassName; testCaseClassName=$(jq -r '.classname' <<<"$testCase")
+        local testCaseName; testCaseName=$testCaseClassName-$(jq -r '.name' <<<"$testCase")
 
         log "info" "Parsing test case $testCaseName"
 
-        local testCaseTime
-        testCaseTime=$(jq -r '.time' <<<"$testCase")
-        local testCaseAsserts
-        testCaseAsserts=$(jq -r '.assertions' <<<"$testCase")
-        # check if .failures exists. If it does, then there is a failure
-        local testCaseFailure
-        testCaseFailure=$(jq -r '.failure' <<<"$testCase")
-        if [ "$testCaseFailure" != "null" ]; then
-          local testCaseFailureMessage
-          testCaseFailureMessage=$(jq -r '.message' <<<"$testCaseFailure")
-          local testCaseFailureText
-          testCaseFailureText=$(jq -r '.text' <<<"$testCaseFailure")
-          testSuiteResult="Failure"
-          testSuiteSuccess="False"
+        local testCaseTime; testCaseTime=$(jq -r '.time' <<<"$testCase") 
+        local testCaseAsserts; testCaseAsserts=$(jq -r '.assertions' <<<"$testCase")
+        local testCaseFailure; testCaseFailure=$(jq -r '.failure' <<<"$testCase")
 
-          # add xml test-case to testCases with newlines to make readable
+        if [ "$testCaseFailure" != "null" ]; then
+          local testCaseFailureMessage; testCaseFailureMessage=$(jq -r '.message' <<<"$testCaseFailure")
+          local testCaseFailureText; testCaseFailureText=$(jq -r '.text' <<<"$testCaseFailure")
           testCases+=("<test-case name=\"$testCaseName\" executed=\"True\" result=\"Failure\" success=\"False\" time=\"$testCaseTime\" asserts=\"$testCaseAsserts\">
           <failure>
             <message>$testCaseFailureMessage: $testCaseFailureText</message>
@@ -740,26 +708,23 @@ test_deployment() {
 
           log "error" "Test case $testCaseName failed: $testCaseFailureMessage: $testCaseFailureText"
 
-          failures=$((failures + 1))
+          failures=$((failures + 1)) 
           testSuiteFailures=$((testSuiteFailures + 1))
         else
           testCases+=("<test-case name=\"$testCaseName\" executed=\"True\" result=\"Success\" success=\"True\" time=\"$testCaseTime\" asserts=\"$testCaseAsserts\" />")
-        
+
           log "info" "Test case $testCaseName passed"
         fi
 
-        total=$((total + 1))
-        totalTime=$(awk "BEGIN {print $totalTime + $testCaseTime; exit}")
-      done # end of test case loop
+        total=$((total + 1)) totalTime=$(awk "BEGIN {print $totalTime + $testCaseTime; exit}")
+      done
 
-      # add suite to testSuites with newlines to make readable
       totalTestSuites+=("<test-suite type=\"$testSuiteType\" name=\"$testSuiteName\" executed=\"True\" result=\"$testSuiteResult\" success=\"$testSuiteSuccess\" time=\"$testSuiteTime\">
       <results>
       $(printf '%s\n' "${testCases[@]}")
       </results>
       </test-suite>")
 
-      # log suite total tests, failures, errors, time
       log "info" "Test suite $testSuiteName total tests: $testSuiteTests, failures: $testSuiteFailures, errors: $testSuiteErrors, time: $testSuiteTime"
 
     done # end of test suite loop
@@ -771,6 +736,10 @@ test_deployment() {
   $(printf '%s\n' "${totalTestSuites[@]}")
   </test-results>"
 
+  if command -v xmllint >/dev/null 2>&1; then
+    testresults=$(xmllint --format - <<<"$testresults")
+  fi
+  
   echo "$testresults" >"$testResultsFile"
 
   # log total tests, failures, errors, time
@@ -880,6 +849,7 @@ command_delete() {
 
 command_test() {
   steps+=("test_deployment")
+  steps+=("aggregate_test_results")
 }
 
 command_all() {
@@ -938,7 +908,7 @@ if $JSON_LOGS; then
   json=${json%,}
   json+="}"
   log "info" "Step timings (s)" "$json"
-  exit 0
+  exit $EXIT_FLAG
 fi
 
 echo ""
@@ -948,3 +918,4 @@ printf "%-30s %s\n" "---------------------" "---------------------"
 for name in "${steps[@]}"; do
     printf "%-30s %s\n" "$name" "${timings[$name]}"
 done
+exit $EXIT_FLAG
