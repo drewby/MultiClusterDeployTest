@@ -69,6 +69,59 @@ The tool also accepts several environment variables, which take precedence over 
 - `JSON_LOGS`: Output logs in JSON format
 - `TEST_RESULTS_DIR`: Output directory for test results
 
+## Manifests URL
+
+The MANIFEST_URL environment variable is used to apply a set
+of manifests to the cluster before tests are run. An example 
+template looks like:
+
+```
+https://raw.githubusercontent.com/drewby/argocd-manifests/main/{clustername}/manifest.yaml
+```
+
+It would be better if we could use the kuttl test framework to apply manifests
+to the edge clusters. However, kuttl does not support applying manifests to
+multiple clusters at the same time. So, we have to use kubectl directly and
+set the context for each cluster. 
+
+## How to Create Tests
+
+[KUTTL](https://kuttl.dev/) is a tool for testing Kubernetes applications. In this project, we use KUTTL to test the application deployed to our edge clusters. Tests are written in YAML files and stored in the `tests/{cluster}/{testname}` directory. 
+
+Each test consists of one or more asserts, which define the expected state of a Kubernetes resource after the application is deployed. For example, the following assert checks that a deployment named `app1` has three ready replicas:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default
+  name: app1
+status:
+  readyReplicas: 3
+```
+
+This assert only checks that an appplication with `name` *app1* exists in the *default* `namespace` and that
+the `readyReplicas` field of the `status` section of the `Deployment` resource. If there are other fields in 
+the manifest that you want to check, you would need to include them in the assert.
+
+Asserts can also test for other kinds of kubernetes objects. For example, a Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: default
+  name: app1
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+  selector:
+    app: app1
+```
+
+For more information on writing assert YAML files for KUTTL, please refer to the [official KUTTL documentation](https://kuttl.dev/docs/testing/asserts-errors.html).
+
 ## Commands and their steps
 
 ### **azure** Command
@@ -106,6 +159,19 @@ The `argocd` command has the following steps:
 3. `login_to_argocd`: Log in to Argo CD using the CLI and the external IP address. If ARGOCD_PASSWORD (or -p option) is set, update the argoCD admin password.
 
 4. `add_argocd_clusters`: Add the edge clusters to Argo CD as clusters to manage.
+
+### Manifests Command
+
+The `manifests` command manifests to the clusters: 
+
+It uses a template to apply a manifest to the cluster. The template is a string provided in MANIFEST_URL environment variable
+or on the command line using `-u` or `--manifest-url` and has a replacement variable `{clustername}`.
+
+The following is an example manifest URL template:
+
+```
+https://raw.githubusercontent.com/drewby/argocd-manifests/main/{clustername}/manifest.yaml
+```
 
 ### **test** Command
 
