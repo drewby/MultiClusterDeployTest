@@ -320,9 +320,6 @@ get_azure_kube_credentials() {
 #    docker instead of k3d so we can control the configuration of the network.
 # 4. Create k3d CONTROL_PLANE cluster
 # 5. Create k3d EDGE_CLUSTER_COUNT edge clusters
-# 6. Modify kubeconfig to work with this script and argocd. a) Rename the context names to
-#    match the cluster names. b) Update the server addresses to use their IPs for 
-#    the docker network edgeClusters.
 deploy_k3d_clusters() {
   local k3dnetwork="edgeClusters"
 
@@ -382,6 +379,12 @@ deploy_k3d_clusters() {
     fi
   done
 
+  log "info" "k3d cluster creation complete."
+}
+
+# Modify kubeconfig contexts to remove k3d- prefix and fix server addresses
+modify_k3d_kube_credentials() {
+
   # get the list of clusters and IP addresses from k3d
   clusters=$(k3d cluster list -o json | jq '[.[] | {name: .name, ip: (.nodes[] | select(.role=="server") | .IP.IP) }]')
 
@@ -406,7 +409,7 @@ deploy_k3d_clusters() {
     fi
   done
 
-  log "info" "k3d cluster creation complete."
+  log "info" "kubeconfig contexts renamed and server addresses fixed."
 }
 
 # Set kubectl context
@@ -841,6 +844,7 @@ command_azure() {
 
 command_k3d() {
   steps+=("deploy_k3d_clusters")
+  steps+=("modify_k3d_kube_credentials")
 }
 
 command_argocd() {
