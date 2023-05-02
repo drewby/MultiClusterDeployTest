@@ -173,14 +173,16 @@ if [[ "$MODE" != "k3d" && "$MODE" != "azure" ]]; then
   exit 1
 fi
 
-# Login to Azure if not already logged in
-login_to_azure() {
-  # check az cli is installed
+# If mode is azure, validate Azure CLI is installed
+if [[ "$MODE" = "azure" ]]; then
   if ! az --version > /dev/null 2>&1; then
     log "error" "Azure CLI is not installed."
     exit 1
   fi
+fi
 
+# Login to Azure if not already logged in
+login_to_azure() {
   if ! az account show > /dev/null 2>&1; then
     log "info" "Logging into Azure..."
     if az login --use-device-code --output none; then
