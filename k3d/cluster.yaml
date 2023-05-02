@@ -1,0 +1,8 @@
+apiVersion: k3d.io/v1alpha2
+kind: Cluster
+name: controlPlane
+servers: 1
+agents: 0
+port: "6443:6443@loadbalancer"
+k3sServerArgs:
+  - "--disable=traefik"
