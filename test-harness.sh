@@ -85,6 +85,8 @@ log() {
 
   if [ "$level" = "error" ]; then
     echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message\033[0m"
+  elif [ "$level" = "warn" ]; then
+    echo -e "\033[0;33m$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message\033[0m" 
   else
     echo "$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message"
   fi
