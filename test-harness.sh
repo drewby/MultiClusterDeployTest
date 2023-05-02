@@ -597,6 +597,11 @@ add_argocd_clusters() {
 # The template must contain {clustername} placeholder
 # 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
 # 2. For each edge cluster, apply manifests from manifestUrl template
+#
+# It would be better if we could use the kuttl test framework to apply manifests
+# to the edge clusters. However, kuttl does not support applying manifests to
+# multiple clusters at the same time. So, we have to use kubectl directly and
+# set the context for each cluster.
 apply_manifests() {
   local edgeClusters
 
