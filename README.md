@@ -2,24 +2,27 @@
 
 This project allows users to test multi-cluster deployments. The tool deploys clusters using either k3d or Azure, and then deploys Argo CD and edge clusters, applies manifests, and runs tests.
 
+## Dev Container
+
+A Visual Studio Code .devcontainer exists with all the 
+Prerequisites. The dev container may also be used in
+GitHub codespaces.
+
 ## Prerequisites
 
-- Docker
+- docker
 - kubectl
 - kuttl
-- argocd (if deploying with argocd)
-
-OR
-
+- argocd CLI
 - k3d (if deploying with k3d)
-- Docker
-
-### Optional
-- .devcontainer (for Visual Studio Code users)
+- azure CLI (if deploying to azure)
 
 ## Usage
 
 The tool is executed by running `./test-harness.sh` followed by a command and any desired options.
+
+The default is to use k3d for deployment. If you want to deploy to azure, use
+`--mode azure` from the command line, or set the `MODE` environment variable.
 
 The available commands are:
 
