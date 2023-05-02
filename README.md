@@ -160,7 +160,7 @@ The `argocd` command has the following steps:
 
 4. `add_argocd_clusters`: Add the edge clusters to Argo CD as clusters to manage.
 
-### Manifests Command
+### manifests Command
 
 The `manifests` command manifests to the clusters: 
 
