@@ -227,6 +227,11 @@ create_resource_group() {
     exit 1
   fi
 
+  if az group show --name "$RESOURCE_GROUP" --output none > /dev/null 2>&1; then
+    log "warn" "Resource group $RESOURCE_GROUP already exists."
+    return
+  fi
+
   log "info" "Creating resource group $RESOURCE_GROUP in $LOCATION..."
   if az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none; then
     log "info" "Resource group $RESOURCE_GROUP created successfully."
