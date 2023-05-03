@@ -17,6 +17,8 @@
 : "${EDGE_CLUSTER_COUNT:=3}"
 : "${TEMP_DIR:=$(mktemp -d)}"
 
+# Generate global run ID
+RUN_ID=$(date +%s%N | md5sum | cut -c1-5)
 EXIT_FLAG=0
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 
@@ -66,8 +68,7 @@ usage() {
   echo "The order of precedence is command line arguments, environment variables, and then defaults."
 }
 
-# Generate global instance ID
-instanceId=$(date +%s%N | md5sum | cut -c1-5)
+
 
 # Log to console
 # Usage: log <level> <message> [data]
@@ -85,19 +86,19 @@ log() {
     jq -n -c \
       --arg timestamp "$timestamp" \
       --arg level "$level" \
-      --arg instanceId "$instanceId" \
+      --arg runId "$RUN_ID" \
       --arg message "$message" \
       --argjson data "$data" \
-      '{timestamp: $timestamp, level: $level, instanceId: $instanceId, message: $message, data: $data}'
+      '{timestamp: $timestamp, level: $level, runId: $RUN_ID, message: $message, data: $data}'
     return 0
   fi
 
   if [ "$level" = "error" ]; then
-    echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message\033[0m"
+    echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m"
   elif [ "$level" = "warn" ]; then
-    echo -e "\033[0;33m$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message\033[0m" 
+    echo -e "\033[0;33m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m" 
   else
-    echo "$timestamp $(printf "%-8s" "[$level]") [$instanceId] $message"
+    echo "$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message"
   fi
 }
 
