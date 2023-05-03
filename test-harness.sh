@@ -667,6 +667,7 @@ test_deployment() {
 # 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
 # 2. For each edge cluster, get test results in JSON format
 # 3. Aggregate test results into a single file in JUnit format
+# TODO: The schema here is wrong, needs to be updated.
 aggregate_test_results() {
   local total=0 failures=0 errors=0 notRun=0 inconclusive=0 ignored=0 skipped=0 totalTime=0 totalTestSuites=()
   local testResultsName="results-$TIMESTAMP" 
@@ -738,7 +739,7 @@ aggregate_test_results() {
 
   # create the test-results xml and save to file
   local testresults
-  testresults="<test-results name=\"$testResultsName\" total=\"$total\" errors=\"$errors\" failures=\"$failures\" not-run=\"$notRun\" inconclusive=\"$inconclusive\" ignored=\"$ignored\" skipped=\"$skipped\" time=\"$totalTime\">
+  testresults="<test-results runId=\"$RUN_ID\" name=\"$testResultsName\" total=\"$total\" errors=\"$errors\" failures=\"$failures\" not-run=\"$notRun\" inconclusive=\"$inconclusive\" ignored=\"$ignored\" skipped=\"$skipped\" time=\"$totalTime\">
   $(printf '%s\n' "${totalTestSuites[@]}")
   </test-results>"
 
