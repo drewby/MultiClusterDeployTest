@@ -19,7 +19,7 @@ GitHub codespaces.
 
 ## Usage
 
-The tool is executed by running `./test-harness.sh` followed by a command and any desired options.
+The tool is executed by running `./trun.sh` followed by a command and any desired options.
 
 The default is to use k3d for deployment. If you want to deploy to azure, use
 `--mode azure` from the command line, or set the `MODE` environment variable.
