@@ -10,12 +10,12 @@ GitHub codespaces.
 
 ## Prerequisites
 
-- kubectl
-- kuttl
-- argocd CLI
-- docker (if deploying with k3d)
-- k3d (if deploying with k3d)
-- azure CLI (if deploying to azure)
+- [docker](https://docs.docker.com/get-docker/)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
+- [kuttl](https://kuttl.dev/docs/)
+- [argocd CLI](https://argo-cd.readthedocs.io/en/stable/cli_installation/)
+- [k3d (if deploying with k3d)](https://k3d.io/)
+- [azure CLI (if deploying to azure)](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)
 
 ## Usage
 
