@@ -100,9 +100,9 @@ status:
   readyReplicas: 3
 ```
 
-This assert only checks that an appplication with `name` *app1* exists in the *default* `namespace` and that
-the `readyReplicas` field of the `status` section of the `Deployment` resource. If there are other fields in 
-the manifest that you want to check, you would need to include them in the assert.
+This assert checks that an appplication with `name` *app1* exists in the *default* `namespace` and that
+the that there are three replicas in the ready state. If there are other fields in 
+the manifest that you want to check, you could include them in the assert. For example, you check for particular annotations, or details of the `spec` section.
 
 Asserts can also test for other kinds of kubernetes objects. For example, a Service:
 
