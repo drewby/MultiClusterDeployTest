@@ -5,7 +5,8 @@
 : "${LOCATION:=eastus}"
 : "${DEPLOYMENT_NAME:=argoCdDemo}"
 : "${LINUX_ADMIN_USERNAME:=azureuser}"
-: "${CONTROL_PLANE:=controlPlane}"
+: "${ENABLE_CONTROL_PLANE:=false}"
+: "${CONTROL_PLANE_NAME:=controlPlane}"
 : "${MANIFEST_URL:=https://raw.githubusercontent.com/drewby/argocd-manifests/main/jal/{clustername\}/nonprod/consumer/argocd/master-manifest.yaml}"
 : "${SKIP_CONFIRMATION:=false}"
 : "${ARGOCD_PASSWORD:=}"
@@ -15,6 +16,7 @@
 : "${TEST_RESULTS_DIR:=./test-results}"
 : "${MODE:=k3d}"
 : "${EDGE_CLUSTER_COUNT:=3}"
+: "${EDGE_CLUSTER_NAMES:=}"
 : "${TEMP_DIR:=$(mktemp -d)}"
 
 # Generate global run ID
@@ -38,11 +40,13 @@ usage() {
   echo "Options:"
   echo "  -m, --mode <value>               Mode to deploy clusters, can be k3d or azure (default: k3d)"
   echo "  -n, --edge-cluster-count <value> Number of edge clusters to deploy (default: 3)"
+  echo "  -c, --edge-cluster-names <value> Comma seperated list of of edge cluster names to deploy (default: cluster1,cluster2,cluster3, etc)"
   echo "  -r, --resource-group <value>     Azure resource group (default: argoCdDemo)"
   echo "  -l, --location <value>           Azure location (default: eastus)"
   echo "  -d, --deployment-name <value>    Name of Azure deployment (default: argoCdDemo)"
   echo "  -a, --admin-username <value>     Linux admin username (default: azureuser)"
-  echo "  -c, --control-plane <value>      Name of control plane cluster (default: controlPlane)"
+  echo "  -e, --enable-control-plane       Uses a control plane cluster to deploy to edge clusters"
+  echo "  -C, --control-plane-name <value> Name of control plane cluster (default: controlPlane)"
   echo "  -u, --manifest-url <value>       URL to edge cluster manifests"
   echo "                                   (required if MANIFEST_URL environment variable not set)"
   echo "  -p, --argocd-password <value>    Password for Argo CD (default: none)"
@@ -54,11 +58,13 @@ usage() {
   echo "Environment variables:"
   echo "  MODE                             Mode to deploy clusters, can be k3d or azure"
   echo "  EDGE_CLUSTER_COUNT               Number of edge clusters to deploy"
+  echo "  EDGE_CLUSTER_NAMES               Names of edge clusters to deploy"
   echo "  RESOURCE_GROUP                   Azure resource group"
   echo "  LOCATION                         Azure location"
   echo "  DEPLOYMENT_NAME                  Name of Azure deployment"
   echo "  LINUX_ADMIN_USERNAME             Linux admin username"
-  echo "  CONTROL_PLANE                    Name of control plane cluster"
+  echo "  ENABLE_CONTROL_PLANE             If 'true', use control plane to deploy to edge clusters"
+  echo "  CONTROL_PLANE_NAME               Name of control plane cluster"
   echo "  MANIFEST_URL                     URL to edge cluster manifests"
   echo "  ARGOCD_PASSWORD                  Password for Argo CD"
   echo "  SSH_PUBLIC_KEY                   Public SSH key"
@@ -67,8 +73,6 @@ usage() {
   echo ""
   echo "The order of precedence is command line arguments, environment variables, and then defaults."
 }
-
-
 
 # Log to console
 # Usage: log <level> <message> [data]
@@ -89,16 +93,16 @@ log() {
       --arg runId "$RUN_ID" \
       --arg message "$message" \
       --argjson data "$data" \
-      '{timestamp: $timestamp, level: $level, runId: $RUN_ID, message: $message, data: $data}'
+      '{timestamp: $timestamp, level: $level, runId: $runId, message: $message, data: $data}'
     return 0
   fi
 
   if [ "$level" = "error" ]; then
-    echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m"
+    echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m" >&2
   elif [ "$level" = "warn" ]; then
     echo -e "\033[0;33m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m" 
   else
-    echo "$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message"
+    echo "$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message" 
   fi
 }
 
@@ -111,6 +115,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--edge-cluster-count)
       EDGE_CLUSTER_COUNT="$2"
+      shift 2
+      ;;
+    -c|--edge-cluster-names)
+      EDGE_CLUSTER_NAMES="$2"
       shift 2
       ;;
     -r|--resource-group)
@@ -129,8 +137,12 @@ while [[ $# -gt 0 ]]; do
       LINUX_ADMIN_USERNAME="$2"
       shift 2
       ;;
-    -c|--control-plane)
-      CONTROL_PLANE="$2"
+    -e|--enable-control-plane)
+      ENABLE_CONTROL_PLANE=true
+      shift
+      ;;
+    -C|--control-plane)
+      CONTROL_PLANE_NAME="$2"
       shift 2
       ;;
     -u|--manifest-url)
@@ -256,7 +268,15 @@ deploy_azure_infra() {
 
   log "info" "Deploying Azure infrastructure..."
 
-  if az deployment group create --resource-group "$RESOURCE_GROUP" --name "$DEPLOYMENT_NAME" --template-file azure/main.bicep --parameters linuxAdminUsername="$LINUX_ADMIN_USERNAME" sshRSAPublicKey="$SSH_PUBLIC_KEY" edgeClusterCount="$EDGE_CLUSTER_COUNT" --output none; then
+  if az deployment group create \
+        --resource-group "$RESOURCE_GROUP" \
+        --name "$DEPLOYMENT_NAME" \
+        --template-file azure/main.bicep \
+        --parameters linuxAdminUsername="$LINUX_ADMIN_USERNAME" \
+        sshRSAPublicKey="$SSH_PUBLIC_KEY" \
+        edgeClusterCount="$EDGE_CLUSTER_COUNT" \
+        enableControlPlane="$ENABLE_CONTROL_PLANE" \
+        --output none; then
     log "info" "Bicep template deployment succeeded."
   else
     log "error" "Bicep template deployment failed."
@@ -266,44 +286,18 @@ deploy_azure_infra() {
   log "info" "Azure infrastructure deployment complete."
 }
 
-# Display control plane values from Bicep template output
-display_azure_control_plane_values() {
-  if [[ -z "$RESOURCE_GROUP" || -z "$DEPLOYMENT_NAME" ]]; then
-    log "error" "Resource group name and Deployment name must not be empty."
-    exit 1
-  fi
-
-  log "info" "Retrieving control plane values..."
-
-  # Get control plane values from Bicep template output
-  controlPlaneName=$(az deployment group show --resource-group "$RESOURCE_GROUP" --name "$DEPLOYMENT_NAME" --query properties.outputs.controlPlaneName.value -o tsv)
-  controlPlaneFQDN=$(az deployment group show --resource-group "$RESOURCE_GROUP" --name "$DEPLOYMENT_NAME" --query properties.outputs.controlPlaneFQDN.value -o tsv)
-
-  if [[ -z "$controlPlaneName" || -z "$controlPlaneFQDN" ]]; then
-    log "error" "Failed to retrieve control plane values."
-    exit 1
-  fi
-
-  if $JSON_LOGS; then
-    log "info" "Control plane values" "{\"controlPlaneName\": \"$controlPlaneName\", \"controlPlaneFQDN\": \"$controlPlaneFQDN\"}"
-  else
-    log "info" "controlPlaneName: $controlPlaneName"
-    log "info" "controlPlaneFQDN: $controlPlaneFQDN"
-  fi
-}
-
 # Get cluster credentials and set kubectl context
 # 1. Get list of cluster names from Azure CLI
 # 2. Get credentials for each cluster using az aks get-credentials
 get_azure_kube_credentials() {
-  if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE" ]]; then
+  if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE_NAME" ]]; then
     log "error" "Resource group name and control plane name must not be empty."
     exit 1
   fi
 
   log "info" "Retrieving credentials for all clusters..."
 
-  # Get list of cluster names (don't filter out CONTROL_PLANE)
+  # Get list of cluster names (don't filter out CONTROL_PLANE_NAME)
   clusters=$(az aks list --resource-group "$RESOURCE_GROUP" --query "[].name" -o tsv)
 
   # Get credentials for each cluster
@@ -320,10 +314,10 @@ get_azure_kube_credentials() {
 
 # Deploy k3d clusters
 # 1. Check k3d is installed
-# 2. Check CONTROL_PLANE is not empty
+# 2. Check CONTROL_PLANE_NAME is not empty
 # 3. Create docker network edgeClusters if it does not exist. We create this network with
 #    docker instead of k3d so we can control the configuration of the network.
-# 4. Create k3d CONTROL_PLANE cluster
+# 4. Create k3d CONTROL_PLANE_NAME cluster
 # 5. Create k3d EDGE_CLUSTER_COUNT edge clusters
 deploy_k3d_clusters() {
   local k3dnetwork="edgeClusters"
@@ -335,13 +329,13 @@ deploy_k3d_clusters() {
     exit 1
   fi
 
-  # check the CONTROL_PLANE is not empty
-  if [[ -z "$CONTROL_PLANE" ]]; then
-    log "error" "CONTROL_PLANE must not be empty."
+  # check if ENABLE_CONTROL_PLANE is true and the CONTROL_PLANE_NAME is not empty
+  if [[ "$ENABLE_CONTROL_PLANE" = true && -z "$CONTROL_PLANE_NAME" ]]; then
+    log "error" "CONTROL_PLANE_NAME must not be empty."
     exit 1
   fi
 
-  # if docker network edgeClusters does not exist, create it
+  # if docker network $k3dnetwork does not exist, create it
   if ! docker network inspect "$k3dnetwork"  > /dev/null 2>&1; then
     log "info" "Creating docker network $k3dnetwork..."
     if docker network create "$k3dnetwork" --driver bridge --ip-range 172.28.0.0/16 --subnet 172.28.0.0/16 --gateway 172.28.0.1 > /dev/null; then
@@ -354,22 +348,33 @@ deploy_k3d_clusters() {
     log "info" "Docker network $k3dnetwork already exists."
   fi
 
-  # check if the CONTROL_PLANE cluster exists
-  if k3d cluster list | grep -q "$CONTROL_PLANE"; then
-    log "info" "k3d cluster $CONTROL_PLANE already exists."
-  else
-    log "info" "Creating k3d cluster $CONTROL_PLANE..."
-    if k3d cluster create "$CONTROL_PLANE" --no-lb --k3s-arg --disable=traefik@server:0 --network "$k3dnetwork" > /dev/null; then
-      log "info" "k3d cluster $CONTROL_PLANE created successfully."
+  # if ENABLE_CONTROL_PLANE is true
+  if [[ "$ENABLE_CONTROL_PLANE" = true ]]; then
+    # check if the CONTROL_PLANE_NAME cluster exists
+    if k3d cluster list | grep -q "$CONTROL_PLANE_NAME"; then
+      log "info" "k3d cluster $CONTROL_PLANE_NAME already exists."
     else
-      log "error" "Failed to create k3d cluster $CONTROL_PLANE."
-      exit 1
+      log "info" "Creating k3d cluster $CONTROL_PLANE_NAME..."
+      if k3d cluster create "$CONTROL_PLANE_NAME" --no-lb --k3s-arg --disable=traefik@server:0 --network "$k3dnetwork" > /dev/null; then
+        log "info" "k3d cluster $CONTROL_PLANE_NAME created successfully."
+      else
+        log "error" "Failed to create k3d cluster $CONTROL_PLANE_NAME."
+        exit 1
+      fi
     fi
+  fi 
+
+  # if EDGE_CLUSTER_NAMES is empty, generate a list of cluster names
+  # based on EDGE_CLUSTER_COUNT using the format cluster1,cluster2,cluster3, etc
+  if [[ -z "$EDGE_CLUSTER_NAMES" ]]; then
+    EDGE_CLUSTER_NAMES=$(seq -s, -f 'cluster%g' "$EDGE_CLUSTER_COUNT")
   fi
-
-  for ((i=1; i<=EDGE_CLUSTER_COUNT; i++)); do
-    cluster="cluster$i"
-
+  
+  # Prefer mapfile or read -a to split command output (or quote to avoid splitting).
+ 
+  IFS="," read -ra edgeclusters <<< "$EDGE_CLUSTER_NAMES"
+  # for each cluster name in EDGE_CLUSTER_NAMES, create the cluster
+  for cluster in "${edgeclusters[@]}"; do
     #check if the cluster exists
     if k3d cluster list | grep -q "$cluster"; then
       log "info" "k3d cluster $cluster already exists."
@@ -382,7 +387,7 @@ deploy_k3d_clusters() {
         exit 1
       fi
     fi
-  done
+  done <<< "$EDGE_CLUSTER_NAMES"
 
   log "info" "k3d cluster creation complete."
 }
@@ -437,63 +442,83 @@ set_kubectl_context() {
   fi
 }
 
-# Deploy Argo CD, if the argocd namespace does not already exist
-# Usage: deploy_argocd
-# 1. Set kubectl context to CONTROL_PLANE
+# Deploy Argo CD to a cluster
+# Usage: deploy_argocd <cluster_name>
+# 1. Set kubectl context to <cluster_name>
 # 2. Check if argocd namespace already exists
 # 3. Remove ~/.config/argocd directory if it exists
 # 4. Create argocd namespace
 # 5. Apply Argo CD manifests
-# 6. Wait for Argo CD to be ready
-# 7. Patch Argo CD to be a LoadBalancer service
+# 6. Wait for argocd-server deployment to be ready
+# 7. Patch argocd-server service to use LoadBalancer
 deploy_argocd() {
-  set_kubectl_context "$CONTROL_PLANE"
+  cluster=$1
 
-  log "info" "Deploying Argo CD..."
+  # if $cluster is empty, set to CONTROL_PLANE_NAME. If CONTROL_PLANE_NAME is empty, exit.
+  if [[ -z "$cluster" ]]; then
+    if [[ -n "$CONTROL_PLANE_NAME" ]]; then
+      cluster="$CONTROL_PLANE_NAME"
+    else
+      log "error" "Cluster name must not be empty."
+      exit 1
+    fi
+  fi
+
+  log "info" "Deploying Argo CD to cluster $cluster..."
+
+  # Set kubectl context to the cluster
+  set_kubectl_context "$cluster"
 
   # Check if argocd namespace already exists
   if kubectl get namespace argocd > /dev/null 2>&1; then
-    log "info" "Argo CD namespace already exists. Skip deployment."
+    log "info" "Argo CD namespace already exists for $cluster. Skip deployment."
     return 0
-  fi
-
-  # Remove ~/.config/argocd directory if it exists
-  if [ -d ~/.config/argocd ]; then
-    log "info" "Removing existing Argo CD configuration directory..."
-    rm -rf ~/.config/argocd
   fi
 
   # Create argocd namespace
   if ! kubectl create namespace argocd > /dev/null 2>&1; then
-    log "error" "Failed to create argocd namespace."
+    log "error" "Failed to create argocd namespace in $cluster."
     exit 1
   fi
 
   # Apply Argo CD manifests
-  if kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml | while read -r line; do log "info" "$line"; done; then
-    log "info" "Argo CD manifests applied successfully."
+  if kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml | while read -r line; do log "info" "$cluster: $line"; done; then
+    log "info" "Argo CD manifests applied successfully for $cluster."
   else
-    log "error" "Failed to apply Argo CD manifests."
+    log "error" "Failed to apply Argo CD manifests in $cluster."
     exit 1
   fi
 
   # Wait for argocd-server deployment to be ready
   if kubectl wait deployment argocd-server -n argocd --for condition=available --timeout=90s > /dev/null 2>&1; then
-    log "info" "argocd-server deployment is ready."
+    log "info" "argocd-server deployment is ready in $cluster."
   else
-    log "error" "argocd-server deployment is not ready."
+    log "error" "argocd-server deployment is not ready in $cluster."
     exit 1
   fi
 
   # Patch argocd-server service to use LoadBalancer
   if kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'  > /dev/null 2>&1; then
-    log "info" "argocd-server service patched to use LoadBalancer."
+    log "info" "$cluster: argocd-server service patched to use LoadBalancer."
   else
-    log "error" "Failed to patch argocd-server service."
+    log "error" "Failed to patch argocd-server service in $cluster."
     exit 1
   fi
 
-  log "info" "Argo CD installation completed."
+  log "info" "Argo CD installation completed for cluster $cluster."
+}
+
+# Deploy Argo CD to each edge cluster
+# Usage: deploy_argocd_edgeclusters
+# 1. Get a list of edge clusters
+# 2. Loop through each cluster and deploy Argo CD using deploy_argocd function
+deploy_argocd_edgeclusters() {
+  # Get a list of edge clusters
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
+
+  for cluster in $edgeClusters; do
+    deploy_argocd "$cluster"
+  done
 }
 
 # Get Argo CD external IP address
@@ -501,8 +526,20 @@ deploy_argocd() {
 # 2. Get the external IP address
 # 3. Set EXTERNAL_IP variable
 get_external_ip() {
+  cluster=$1
+
+  # if $cluster is empty, set to CONTROL_PLANE_NAME. If CONTROL_PLANE_NAME is empty, exit.
+  if [[ -z "$cluster" ]]; then
+    if [[ -n "$CONTROL_PLANE_NAME" ]]; then
+      cluster="$CONTROL_PLANE_NAME"
+    else
+      log "error" "Cluster name must not be empty."
+      exit 1
+    fi
+  fi
+  
   # Wait for argocd-server service to have an external IP address
-  log "info" "Waiting for an external IP address..."
+  log "info" "Waiting for an external IP address for $cluster..."
   
   EXTERNAL_IP=""
   timeout=$(($(date +%s) + 60))
@@ -519,7 +556,7 @@ get_external_ip() {
     exit 1
   fi  
   
-  log "info" "External IP address: $EXTERNAL_IP"
+  log "info" "External IP address for $cluster: $EXTERNAL_IP"
 }
 
 # Login to Argo CD, if not already logged in
@@ -530,13 +567,24 @@ get_external_ip() {
 # 4. Login to Argo CD
 # 5. If ARGOCD_PASSWORD is not empty, update password
 login_to_argocd() {
-  if [[ -z "$EXTERNAL_IP" ]]; then
-    log "error" "External IP must not be empty."
-    exit 1
+  cluster=$1
+
+  # if $cluster is empty, set to CONTROL_PLANE_NAME. If CONTROL_PLANE_NAME is empty, exit.
+  if [[ -z "$cluster" ]]; then
+    if [[ -n "$CONTROL_PLANE_NAME" ]]; then
+      cluster="$CONTROL_PLANE_NAME"
+    else
+      log "error" "Cluster name must not be empty."
+      exit 1
+    fi
   fi
 
+  # set context to $cluster
+  set_kubectl_context "$cluster"
+  get_external_ip "$cluster"
+
   # Check if argocd is already logged in
-  if argocd account get > /dev/null 2>&1; then
+  if argocd account get --server "$EXTERNAL_IP" > /dev/null 2>&1; then
     log "info" "Already logged in to Argo CD."
     return 0
   fi
@@ -573,16 +621,27 @@ login_to_argocd() {
   log "info" "Logged in to Argo CD successfully."
 }
 
+# Login to ArgoCD on edge clusters
+login_to_argocd_edgeclusters() {
+  # Get a list of edge clusters
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
+
+  for cluster in $edgeClusters; do
+    login_to_argocd "$cluster"
+  done
+}
+
+
 # Add edge clusters to Argo CD
-# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE_NAME
 # 2. For each edge cluster, add it to Argo CD
 add_argocd_clusters() {
   local edgeClusters
   
   log "info" "Adding edge clusters to Argo CD..."
 
-  # get edgeClusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
-  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
+  # get edgeClusters by querying kubeconfig contexts, ignore $CONTROL_PLANE_NAME
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
 
   for cluster in $edgeClusters; do
     if argocd cluster add "$cluster" -y  > /dev/null 2>&1; then
@@ -596,7 +655,7 @@ add_argocd_clusters() {
 # Deploy Argo CD applications
 # For each edge cluster, apply manifests from manifestUrl template
 # The template must contain {clustername} placeholder
-# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE_NAME
 # 2. For each edge cluster, apply manifests from manifestUrl template
 #
 # It would be better if we could use the kuttl test framework to apply manifests
@@ -607,18 +666,31 @@ apply_manifests() {
   local edgeClusters
 
   # Require resourceGroup, controlPlane, manifestUrl
-  if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE" || -z "$MANIFEST_URL" ]]; then
-    log "error" "Resource group name, control plane name, and Manifest URL template must not be empty."
+  if [[ -z "$RESOURCE_GROUP" || -z "$MANIFEST_URL" ]]; then
+    log "error" "Resource group name, and Manifest URL template must not be empty."
     exit 1
   fi
 
-  set_kubectl_context "$CONTROL_PLANE"
+  # if ENABLE_CONTROL_PLANE is true, CONTROL_PLANE_NAME must not be empty
+  if [[ "$ENABLE_CONTROL_PLANE" = true && -z "$CONTROL_PLANE_NAME" ]]; then
+    log "error" "CONTROL_PLANE_NAME must not be empty."
+    exit 1
+  fi
+
+  # if ENABLE_CONTROL_PLANE is true, set context to CONTROL_PLANE_NAME
+  if [[ "$ENABLE_CONTROL_PLANE" = true ]]; then
+    set_kubectl_context "$CONTROL_PLANE_NAME"
+  fi
 
   # Get list of edge clusters
-  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
 
   # Loop over each cluster and apply manifests
   for cluster in $edgeClusters; do
+    if [[ "$ENABLE_CONTROL_PLANE" = false ]]; then
+      set_kubectl_context "$cluster"
+    fi
+
     local url="${MANIFEST_URL/\{clustername\}/$cluster}"
     if kubectl apply -f "$url" > /dev/null 2>&1; then
       log "info" "Applied manifests for $cluster successfully."
@@ -629,7 +701,7 @@ apply_manifests() {
 }
 
 # Run KUTTL tests, collect results
-# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE_NAME
 # 2. For each edge cluster, run KUTTL tests in tests/{cluster} folder
 # 3. Collect test results in a temporary folder
 # 4. Aggregate test results into a single file in JUnit format
@@ -637,7 +709,7 @@ test_deployment() {
   local edgeClusters
 
   # Require resourceGroup, controlPlane
-  if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE" ]]; then
+  if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE_NAME" ]]; then
     log "error" "Resource group name and control plane name must not be empty."
     exit 1
   fi
@@ -646,7 +718,7 @@ test_deployment() {
   log "info" "Running tests..."
 
   # Get list of edge clusters
-  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
 
   # Loop over each cluster and run tests
   for cluster in $edgeClusters; do
@@ -664,7 +736,7 @@ test_deployment() {
 }
 
 # Aggregate test results into a single file in JUnit format
-# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE
+# 1. Get edge clusters by querying kubeconfig contexts, ignore $CONTROL_PLANE_NAME
 # 2. For each edge cluster, get test results in JSON format
 # 3. Aggregate test results into a single file in JUnit format
 # TODO: The schema here is wrong, needs to be updated.
@@ -675,7 +747,7 @@ aggregate_test_results() {
   
   mkdir -p "$TEST_RESULTS_DIR"
   
-  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE")
+  edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
 
   for cluster in $edgeClusters; do
     local reportName; reportName="$cluster-$TIMESTAMP" 
@@ -683,6 +755,12 @@ aggregate_test_results() {
 
     log "info" "Parsing test results in $clusterResultsFile"
     
+    # check if the file exists and has a .testsuite[] property
+    if ! jq -e '.testsuite[]' "$clusterResultsFile" > /dev/null 2>&1; then
+      log "error" "Failed to parse test results in $clusterResultsFile"
+      continue
+    fi
+
     local testResults; testResults=$(jq -r '.testsuite[] | @base64' "$clusterResultsFile")
 
     for result in $testResults; do
@@ -770,8 +848,9 @@ delete_azure_resource_group() {
 # Delete the k3d clusters
 delete_k3d_clusters() {
   if k3d cluster list > /dev/null 2>&1; then
-    log "info" "Deleting k3d clusters..."
-    if k3d cluster delete -a > /dev/null 2>&1; then
+    # to output k3d logs without color codes, we use sed to remove the color codes
+    # and remove the INFO[####] prefix
+    if k3d cluster delete -a 2>&1 | sed -u -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g" | sed -u -E 's/INFO\[[0-9]+\] //' | while read -r line; do log "info" "$line"; done; then
       log "info" "Deleted k3d clusters successfully."
     else
       log "error" "Failed to delete k3d clusters."
@@ -814,7 +893,6 @@ command_azure() {
   steps+=("generate_ssh_key")
   steps+=("create_resource_group")
   steps+=("deploy_azure_infra")
-  steps+=("display_azure_control_plane_values")
   steps+=("get_azure_kube_credentials")
 }
 
@@ -824,10 +902,16 @@ command_k3d() {
 }
 
 command_argocd() {
-  steps+=("deploy_argocd")
-  steps+=("get_external_ip")
-  steps+=("login_to_argocd")
-  steps+=("add_argocd_clusters")
+  # if $ENABLE_CONTROL_PLANE is true, deploy Argo CD to the control plane
+  # else deploy Argo CD to each edge cluster
+  if [[ "$ENABLE_CONTROL_PLANE" = true ]]; then
+    steps+=("deploy_argocd")
+    steps+=("login_to_argocd")
+    steps+=("add_argocd_clusters")
+  else
+    steps+=("deploy_argocd_edgeclusters")
+    steps+=("login_to_argocd_edgeclusters")
+  fi
 }
 
 command_manifests() {
