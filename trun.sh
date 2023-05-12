@@ -268,13 +268,19 @@ deploy_azure_infra() {
 
   log "info" "Deploying Azure infrastructure..."
 
+  # if EDGE_CLUSTER_NAMES is empty, generate a list of cluster names
+  # based on EDGE_CLUSTER_COUNT using the format cluster1,cluster2,cluster3, etc
+  if [[ -z "$EDGE_CLUSTER_NAMES" ]]; then
+    EDGE_CLUSTER_NAMES=$(seq -s, -f 'cluster%g' "$EDGE_CLUSTER_COUNT")
+  fi
+
   if az deployment group create \
         --resource-group "$RESOURCE_GROUP" \
         --name "$DEPLOYMENT_NAME" \
         --template-file azure/main.bicep \
         --parameters linuxAdminUsername="$LINUX_ADMIN_USERNAME" \
         sshRSAPublicKey="$SSH_PUBLIC_KEY" \
-        edgeClusterCount="$EDGE_CLUSTER_COUNT" \
+        edgeClusterNames="$EDGE_CLUSTER_NAMES" \
         enableControlPlane="$ENABLE_CONTROL_PLANE" \
         --output none; then
     log "info" "Bicep template deployment succeeded."

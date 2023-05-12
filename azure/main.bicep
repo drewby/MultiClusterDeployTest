@@ -1,4 +1,5 @@
-param edgeClusterCount int = 3
+@description('A command separated list of edge cluster names to create.')
+param edgeClusterNames string = 'cluster1,cluster2,cluster3'
 
 @description('The location of the Managed Cluster resource.')
 param location string = resourceGroup().location
@@ -9,7 +10,11 @@ param linuxAdminUsername string
 @description('Configure all linux machines with the SSH RSA public key string. Your key should include three parts, for example \'ssh-rsa AAAAB...snip...UcyupgH azureuser@linuxvm\'')
 param sshRSAPublicKey string
 
-module controlPlane 'cluster.bicep' = {
+@description('Create a control plane cluster')
+param enableControlPlane bool = false
+
+// if enableControlPlane is true, create a control plane cluster
+module controlPlane 'cluster.bicep' = if (enableControlPlane) {
   name: 'controlPlane'
   params: {
     clusterName: 'controlPlane'
@@ -20,17 +25,17 @@ module controlPlane 'cluster.bicep' = {
   }
 }
 
+// split the comma separated list of edge cluster names into an array
+var clusterNames = split(edgeClusterNames, ',')
+
 // create edgeClusterCount of edge clusters using the same module
-module edgeCluster 'cluster.bicep' = [for i in range(1, edgeClusterCount): {
-  name: 'cluster${i}'
+module edgeCluster 'cluster.bicep' = [for name in clusterNames: {
+  name: 'cluster-${name}'
   params: {
-    clusterName: 'cluster${i}'
+    clusterName: name
     location: location
-    dnsPrefix: 'cluster${i}'
+    dnsPrefix: name
     linuxAdminUsername: linuxAdminUsername
     sshRSAPublicKey: sshRSAPublicKey
   }
 }]
-
-output controlPlaneName string = controlPlane.outputs.clusterName
-output controlPlaneFQDN string = controlPlane.outputs.clusterFQDN
