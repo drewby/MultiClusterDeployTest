@@ -32,10 +32,10 @@ usage() {
   echo "  all            Execute all steps: deployment of clusters (k3d or azure), Argo CD, manifests, and tests"
   echo "  k3d            Deploy k3d infrastructure"
   echo "  azure          Deploy Azure infrastructure"
-  echo "  argocd         Deploy Argo CD and edge clusters"
+  echo "  argocd         Deploy Argo CD"
   echo "  manifests      Apply manifests to edge clusters"
   echo "  test           Execute tests"
-  echo "  delete         Remove Azure infrastructure"
+  echo "  delete         Delete k3d or azure infrastructure"
   echo ""
   echo "Options:"
   echo "  -m, --mode <value>               Set the mode to deploy clusters (default: k3d)"
@@ -749,7 +749,7 @@ test_deployment() {
 # 3. Aggregate test results into a single file in JUnit format
 # TODO: The schema here is wrong, needs to be updated.
 aggregate_test_results() {
-  local total=0 failures=0 errors=0 notRun=0 inconclusive=0 ignored=0 skipped=0 totalTime=0 totalTestSuites=()
+  local total=0 failures=0 errors=0 totalTime=0 totalTestSuites=()
   local testResultsName="results-$TIMESTAMP" 
   local testResultsFile="$TEST_RESULTS_DIR/$testResultsName.xml" 
   
@@ -774,9 +774,8 @@ aggregate_test_results() {
     for result in $testResults; do
       local testSuite; testSuite=$(base64 -d <<<"$result") testSuiteName=$(jq -r '.name' <<<"$testSuite")
       log "info" "Parsing test suite $testSuiteName"
-      local testSuiteType="KUTTL" 
       local testSuiteTests; testSuiteTests=$(jq -r '.tests' <<<"$testSuite") testSuiteFailures=0 testSuiteErrors=0
-      local testSuiteTime; testSuiteTime=$(jq -r '.time' <<<"$testSuite") testSuiteResult="Success" testSuiteSuccess="True"
+      local testSuiteTime; testSuiteTime=$(jq -r '.time' <<<"$testSuite") 
       local testSuiteTestCases; testSuiteTestCases=$(jq -r '.testcase[] | @base64' <<<"$testSuite") testCases=()
 
       for item in $testSuiteTestCases; do
@@ -787,7 +786,6 @@ aggregate_test_results() {
         log "info" "Parsing test case $testCaseName"
 
         local testCaseTime; testCaseTime=$(jq -r '.time' <<<"$testCase") 
-        local testCaseAsserts; testCaseAsserts=$(jq -r '.assertions' <<<"$testCase")
         local testCaseFailure; testCaseFailure=$(jq -r '.failure' <<<"$testCase")
 
         if [ "$testCaseFailure" != "null" ]; then
