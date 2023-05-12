@@ -791,18 +791,18 @@ aggregate_test_results() {
         if [ "$testCaseFailure" != "null" ]; then
           local testCaseFailureMessage; testCaseFailureMessage=$(jq -r '.message' <<<"$testCaseFailure")
           local testCaseFailureText; testCaseFailureText=$(jq -r '.text' <<<"$testCaseFailure")
-          testCases+=("<test-case name=\"$testCaseName\" executed=\"True\" result=\"Failure\" success=\"False\" time=\"$testCaseTime\" asserts=\"$testCaseAsserts\">
-          <failure>
-            <message>$testCaseFailureMessage: $testCaseFailureText</message>
-          </failure>
-          </test-case>")
+          testCases+=("<testcase name=\"$testCaseName\" time=\"$testCaseTime\">
+            <failure message=\"$testCaseFailureMessage\">
+              $testCaseFailureText
+            </failure>
+          </testcase>")
 
           log "error" "Test case $testCaseName failed: $testCaseFailureMessage: $testCaseFailureText"
 
           failures=$((failures + 1)) 
           testSuiteFailures=$((testSuiteFailures + 1))
         else
-          testCases+=("<test-case name=\"$testCaseName\" executed=\"True\" result=\"Success\" success=\"True\" time=\"$testCaseTime\" asserts=\"$testCaseAsserts\" />")
+          testCases+=("<testcase name=\"$testCaseName\" time=\"$testCaseTime\" />")
 
           log "info" "Test case $testCaseName passed"
         fi
@@ -810,11 +810,12 @@ aggregate_test_results() {
         total=$((total + 1)) totalTime=$(awk "BEGIN {print $totalTime + $testCaseTime; exit}")
       done
 
-      totalTestSuites+=("<test-suite type=\"$testSuiteType\" name=\"$testSuiteName\" executed=\"True\" result=\"$testSuiteResult\" success=\"$testSuiteSuccess\" time=\"$testSuiteTime\">
-      <results>
+      totalTestSuites+=("<testsuite  name=\"$testSuiteName\" tests=\"$testSuiteTests\" errors=\"$testSuiteErrors\" failures=\"$testSuiteFailures\" skipped=\"0\" time=\"$testSuiteTime\">
+      <properties>
+        <property name=\"RunId\" value=\"$RUN_ID\" />
+      </properties>
       $(printf '%s\n' "${testCases[@]}")
-      </results>
-      </test-suite>")
+      </testsuite>")
 
       log "info" "Test suite $testSuiteName total tests: $testSuiteTests, failures: $testSuiteFailures, errors: $testSuiteErrors, time: $testSuiteTime"
 
@@ -823,9 +824,9 @@ aggregate_test_results() {
 
   # create the test-results xml and save to file
   local testresults
-  testresults="<test-results runId=\"$RUN_ID\" name=\"$testResultsName\" total=\"$total\" errors=\"$errors\" failures=\"$failures\" not-run=\"$notRun\" inconclusive=\"$inconclusive\" ignored=\"$ignored\" skipped=\"$skipped\" time=\"$totalTime\">
+  testresults="<testsuites>
   $(printf '%s\n' "${totalTestSuites[@]}")
-  </test-results>"
+  </testsuites>"
 
   if command -v xmllint >/dev/null 2>&1; then
     testresults=$(xmllint --format - <<<"$testresults")
