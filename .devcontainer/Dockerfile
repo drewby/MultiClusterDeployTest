@@ -5,7 +5,7 @@ RUN apt-get update && \
     apt-get autoremove -y && \
     apt-get clean -y
 
-RUN apt-get update & apt-get install build-essential procps curl file git xmlunit -y
+RUN apt-get update & apt-get install build-essential procps curl file git libxml2-utils -y
 
 # install k3d
 RUN wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
