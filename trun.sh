@@ -772,6 +772,11 @@ apply_manifests() {
 test_deployment() {
   local edgeClusters
 
+  if ! command -v kubectl-kuttl > /dev/null; then
+    log "error" "kubectl-kuttl is not installed."
+    exit 1
+  fi
+
   # Require resourceGroup, controlPlane
   if [[ -z "$RESOURCE_GROUP" || -z "$CONTROL_PLANE_NAME" ]]; then
     log "error" "Resource group name and control plane name must not be empty."
@@ -790,7 +795,7 @@ test_deployment() {
 
     local testFolder="tests/$cluster"
     local reportName="$cluster-$TIMESTAMP"
-    if redirect "kubectl kuttl test --report JSON --artifacts-dir \"$TEMP_DIR\" --report-name \"$reportName\" \"$testFolder\""; then
+    if redirect "kubectl-kuttl test --report JSON --artifacts-dir \"$TEMP_DIR\" --report-name \"$reportName\" \"$testFolder\""; then
       log "info" "Tests for $cluster completed."
     else
       log "error" "Tests for $cluster failed."
