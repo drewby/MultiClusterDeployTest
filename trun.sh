@@ -18,6 +18,7 @@
 : "${EDGE_CLUSTER_COUNT:=3}"
 : "${EDGE_CLUSTER_NAMES:=}"
 : "${TEMP_DIR:=$(mktemp -d)}"
+: "${VERBOSE:=false}"
 
 # Generate global run ID
 RUN_ID=$(date +%s%N | md5sum | cut -c1-5)
@@ -53,6 +54,7 @@ usage() {
   echo "  -j, --json-logs                  Enable output of logs in JSON format"
   echo "  -o, --output <value>             Set the output directory for test results (default: ./test-results)"
   echo "  -y, --yes                        Enable skipping of the confirmation prompt"
+  echo "  -v, --verbose                    Enable verbose output"
   echo "  -h, --help                       Display this usage information"
   echo ""
   echo "Environment variables:"
@@ -86,7 +88,8 @@ log() {
   local message="$2"
   local timestamp
   timestamp=$(date +"%Y-%m-%d %H:%M:%S.%3N")
-  local data="${3:-[]}"
+  local source="${3:-trun}"
+  local data="${4:-[]}"
 
   if [ "$JSON_LOGS" = true ]; then
     jq -n -c \
@@ -94,18 +97,67 @@ log() {
       --arg level "$level" \
       --arg runId "$RUN_ID" \
       --arg message "$message" \
+      --arg source "$source" \
       --argjson data "$data" \
-      '{timestamp: $timestamp, level: $level, runId: $runId, message: $message, data: $data}'
+      '{timestamp: $timestamp, level: $level, runId: $runId, source: $source, message: $message, data: $data}'
     return 0
   fi
 
+  logmessage="$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $(printf "%-10s" "[$source]") $message"
   if [ "$level" = "error" ]; then
-    echo -e "\033[0;31m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m" >&2
+    echo -e "\033[0;31m$logmessage\033[0m" >&2
   elif [ "$level" = "warn" ]; then
-    echo -e "\033[0;33m$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message\033[0m" 
+    echo -e "\033[0;33m$logmessage\033[0m" 
   else
-    echo "$timestamp $(printf "%-8s" "[$level]") [$RUN_ID] $message" 
+    echo "$logmessage" 
   fi
+}
+
+redirect() {
+  cmd="$1"
+
+  if [[ -z "$cmd" ]]; then
+    log "error" "Command is required."
+    exit 1
+  fi
+
+  label=$(echo "$cmd" | awk '{print $1}')
+  
+  # remove color codes and INFO[0-9] from output
+  cmd="$cmd | sed -u -r \"s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g\" | sed -u -E 's/INFO\[[0-9]+\] //'; return \${PIPESTATUS[0]}"
+
+  # Create named pipes for stdout and stderr
+  # This allows us to wait for the processes to finish
+  # Otherwise, log messages appear out of order
+  local stdout_pipe; stdout_pipe=$(mktemp -u)
+  local stderr_pipe; stderr_pipe=$(mktemp -u)
+  mkfifo "$stdout_pipe" "$stderr_pipe"
+
+  # Start the processes for stdout and stderr redirection
+
+  # stdout
+  {
+    while read -r line; do
+      if [[ "$VERBOSE" = true ]]; then
+        log "info" "$line" "$label"
+      fi
+    done < "$stdout_pipe"
+  } & local stdout_pid=$!
+
+  # stderr
+  {
+    while read -r line; do
+      log "error" "$line" "$label"
+    done < "$stderr_pipe"
+  } & local stderr_pid=$!
+
+  # get exit code of command so we can return it
+  eval "$cmd" > "$stdout_pipe" 2> "$stderr_pipe" 
+
+  # Wait for stdout and stderr processes to finish
+  # and then remove the named pipes
+  wait "$stdout_pid" "$stderr_pid"
+  rm "$stdout_pipe" "$stderr_pipe"
 }
 
 # Parse command line arguments
@@ -167,6 +219,10 @@ while [[ $# -gt 0 ]]; do
       TEST_RESULTS_DIR="$2"
       shift 2
       ;;
+    -v|--verbose)
+      VERBOSE=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -207,7 +263,7 @@ fi
 
 # Login to Azure if not already logged in
 login_to_azure() {
-  if ! az account show > /dev/null 2>&1; then
+  if ! redirect "az account show"; then
     log "info" "Logging into Azure..."
     if az login --use-device-code --output none; then
       log "info" "Logged into Azure successfully."
@@ -247,13 +303,13 @@ create_resource_group() {
     exit 1
   fi
 
-  if az group show --name "$RESOURCE_GROUP" --output none > /dev/null 2>&1; then
+  if redirect "az group show --name \"$RESOURCE_GROUP\" --output none"; then
     log "warn" "Resource group $RESOURCE_GROUP already exists."
     return
   fi
 
   log "info" "Creating resource group $RESOURCE_GROUP in $LOCATION..."
-  if az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none; then
+  if redirect "az group create --name \"$RESOURCE_GROUP\" --location \"$LOCATION\" --output none"; then
     log "info" "Resource group $RESOURCE_GROUP created successfully."
   else
     log "error" "Failed to create resource group $RESOURCE_GROUP."
@@ -310,7 +366,7 @@ get_azure_kube_credentials() {
 
   # Get credentials for each cluster
   for cluster in $clusters; do
-    if az aks get-credentials --resource-group "$RESOURCE_GROUP" --name "$cluster" --overwrite-existing > /dev/null 2>&1; then
+    if redirect "az aks get-credentials --resource-group \"$RESOURCE_GROUP\" --name \"$cluster\" --overwrite-existing"; then
       log "info" "Credentials retrieved successfully for cluster $cluster."
     else
       log "error" "Failed to retrieve credentials for cluster $cluster."
@@ -344,9 +400,9 @@ deploy_k3d_clusters() {
   fi
 
   # if docker network $k3dnetwork does not exist, create it
-  if ! docker network inspect "$k3dnetwork"  > /dev/null 2>&1; then
+  if ! redirect "docker network inspect \"$k3dnetwork\""; then
     log "info" "Creating docker network $k3dnetwork..."
-    if docker network create "$k3dnetwork" --driver bridge --ip-range 172.28.0.0/16 --subnet 172.28.0.0/16 --gateway 172.28.0.1 > /dev/null; then
+    if redirect "docker network create \"$k3dnetwork\" --driver bridge --ip-range 172.28.0.0/16 --subnet 172.28.0.0/16 --gateway 172.28.0.1"; then
       log "info" "Docker network $k3dnetwork created successfully."
     else
       log "error" "Failed to create docker network $k3dnetwork."
@@ -363,7 +419,7 @@ deploy_k3d_clusters() {
       log "info" "k3d cluster $CONTROL_PLANE_NAME already exists."
     else
       log "info" "Creating k3d cluster $CONTROL_PLANE_NAME..."
-      if k3d cluster create "$CONTROL_PLANE_NAME" --no-lb --k3s-arg --disable=traefik@server:0 --network "$k3dnetwork" > /dev/null; then
+      if redirect "k3d cluster create \"$CONTROL_PLANE_NAME\" --no-lb --k3s-arg --disable=traefik@server:0 --network \"$k3dnetwork\""; then
         log "info" "k3d cluster $CONTROL_PLANE_NAME created successfully."
       else
         log "error" "Failed to create k3d cluster $CONTROL_PLANE_NAME."
@@ -388,7 +444,7 @@ deploy_k3d_clusters() {
       log "info" "k3d cluster $cluster already exists."
     else
       log "info" "Creating k3d cluster $cluster..."
-      if k3d cluster create "$cluster" --no-lb --k3s-arg --disable=traefik@server:0 --network "$k3dnetwork" > /dev/null; then
+      if redirect "k3d cluster create \"$cluster\" --no-lb --k3s-arg --disable=traefik@server:0 --network \"$k3dnetwork\""; then
         log "info" "k3d cluster $cluster created successfully."
       else
         log "error" "Failed to create k3d cluster $cluster."
@@ -478,19 +534,19 @@ deploy_argocd() {
   set_kubectl_context "$cluster"
 
   # Check if argocd namespace already exists
-  if kubectl get namespace argocd > /dev/null 2>&1; then
+  if kubectl get namespace argocd; then
     log "info" "Argo CD namespace already exists for $cluster. Skip deployment."
     return 0
   fi
 
   # Create argocd namespace
-  if ! kubectl create namespace argocd > /dev/null 2>&1; then
+  if ! redirect "kubectl create namespace argocd"; then
     log "error" "Failed to create argocd namespace in $cluster."
     exit 1
   fi
 
   # Apply Argo CD manifests
-  if kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml | while read -r line; do log "info" "$cluster: $line"; done; then
+  if redirect "kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"; then
     log "info" "Argo CD manifests applied successfully for $cluster."
   else
     log "error" "Failed to apply Argo CD manifests in $cluster."
@@ -498,7 +554,7 @@ deploy_argocd() {
   fi
 
   # Wait for argocd-server deployment to be ready
-  if kubectl wait deployment argocd-server -n argocd --for condition=available --timeout=90s > /dev/null 2>&1; then
+  if redirect "kubectl wait deployment argocd-server -n argocd --for condition=available --timeout=90s"; then
     log "info" "argocd-server deployment is ready in $cluster."
   else
     log "error" "argocd-server deployment is not ready in $cluster."
@@ -506,7 +562,7 @@ deploy_argocd() {
   fi
 
   # Patch argocd-server service to use LoadBalancer
-  if kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'  > /dev/null 2>&1; then
+  if redirect "kubectl patch svc argocd-server -n argocd -p '{\"spec\": {\"type\": \"LoadBalancer\"}}'"; then
     log "info" "$cluster: argocd-server service patched to use LoadBalancer."
   else
     log "error" "Failed to patch argocd-server service in $cluster."
@@ -592,7 +648,7 @@ login_to_argocd() {
   get_external_ip "$cluster"
 
   # Check if argocd is already logged in
-  if argocd account get --server "$EXTERNAL_IP" > /dev/null 2>&1; then
+  if redirect "argocd account get --server \"$EXTERNAL_IP\""; then
     log "info" "Already logged in to Argo CD."
     return 0
   fi
@@ -600,7 +656,7 @@ login_to_argocd() {
   log "info" "Logging in to Argo CD..."
 
   # Wait for argocd-initial-admin-secret to be available
-  if ! kubectl wait secret --namespace argocd argocd-initial-admin-secret --for=jsonpath='{.type}'=Opaque --timeout=90s > /dev/null 2>&1; then
+  if ! redirect "kubectl wait secret --namespace argocd argocd-initial-admin-secret --for=jsonpath='{.type}'=Opaque --timeout=90s"; then
     log "error" "Failed to get argocd-initial-admin-secret."
     exit 1
   fi
@@ -613,14 +669,14 @@ login_to_argocd() {
   fi
 
   # Log in to argocd with admin password
-  if ! argocd login "$EXTERNAL_IP" --username admin --password "$adminSecret" --insecure > /dev/null 2>&1; then
+  if ! redirect "argocd login \"$EXTERNAL_IP\" --username admin --password \"$adminSecret\" --insecure"; then
     log "error" "Failed to log in to Argo CD."
     exit 1
   fi
 
   if [ -n "$ARGOCD_PASSWORD" ]; then
     # Update admin password
-    if ! argocd account update-password --current-password "$adminSecret" --new-password "$ARGOCD_PASSWORD" > /dev/null 2>&1; then
+    if ! redirect "argocd account update-password --current-password \"$adminSecret\" --new-password \"$ARGOCD_PASSWORD\""; then
       log "error" "Failed to update admin password."
       exit 1
     fi
@@ -652,7 +708,7 @@ add_argocd_clusters() {
   edgeClusters=$(kubectl config get-contexts -o name | grep -v "$CONTROL_PLANE_NAME")
 
   for cluster in $edgeClusters; do
-    if argocd cluster add "$cluster" -y  > /dev/null 2>&1; then
+    if redirect "argocd cluster add \"$cluster\" -y"; then
       log "info" "Added $cluster to Argo CD successfully."
     else
       log "error" "Failed to add $cluster to Argo CD."
@@ -700,7 +756,7 @@ apply_manifests() {
     fi
 
     local url="${MANIFEST_URL/\{clustername\}/$cluster}"
-    if kubectl apply -f "$url" > /dev/null 2>&1; then
+    if redirect "kubectl apply -f \"$url\""; then
       log "info" "Applied manifests for $cluster successfully."
     else
       log "error" "Failed to apply manifests for $cluster."
@@ -734,7 +790,7 @@ test_deployment() {
 
     local testFolder="tests/$cluster"
     local reportName="$cluster-$TIMESTAMP"
-    if kubectl kuttl test --report JSON --artifacts-dir "$TEMP_DIR" --report-name "$reportName" "$testFolder" > /dev/null 2>&1; then
+    if redirect "kubectl kuttl test --report JSON --artifacts-dir \"$TEMP_DIR\" --report-name \"$reportName\" \"$testFolder\""; then
       log "info" "Tests for $cluster completed."
     else
       log "error" "Tests for $cluster failed."
@@ -764,7 +820,7 @@ aggregate_test_results() {
     log "info" "Parsing test results in $clusterResultsFile"
     
     # check if the file exists and has a .testsuite[] property
-    if ! jq -e '.testsuite[]' "$clusterResultsFile" > /dev/null 2>&1; then
+    if ! redirect "jq -e '.testsuite[]' \"$clusterResultsFile\""; then
       log "error" "Failed to parse test results in $clusterResultsFile"
       continue
     fi
@@ -841,9 +897,9 @@ aggregate_test_results() {
 
 # Delete the Azure resource group
 delete_azure_resource_group() {
-  if az group exists --name "$RESOURCE_GROUP" > /dev/null 2>&1; then
+  if redirect "az group exists --name \"$RESOURCE_GROUP\""; then
     log "info" "Deleting resource group $RESOURCE_GROUP..."
-    if az group delete --name "$RESOURCE_GROUP" --yes > /dev/null 2>&1; then
+    if redirect "az group delete --name \"$RESOURCE_GROUP\" --yes"; then
       log "info" "Deleted resource group $RESOURCE_GROUP successfully."
     else
       log "error" "Failed to delete resource group $RESOURCE_GROUP."
@@ -857,7 +913,7 @@ delete_k3d_clusters() {
   if k3d cluster list > /dev/null 2>&1; then
     # to output k3d logs without color codes, we use sed to remove the color codes
     # and remove the INFO[####] prefix
-    if k3d cluster delete -a 2>&1 | sed -u -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g" | sed -u -E 's/INFO\[[0-9]+\] //' | while read -r line; do log "info" "$line"; done; then
+    if redirect "k3d cluster delete -a"; then
       log "info" "Deleted k3d clusters successfully."
     else
       log "error" "Failed to delete k3d clusters."
@@ -1005,7 +1061,7 @@ if $JSON_LOGS; then
   done
   json=${json%,}
   json+="}"
-  log "info" "Step timings (s)" "$json"
+  log "info" "Step timings (s)" "trun" "$json"
   exit $EXIT_FLAG
 fi
 
